@@ -28,9 +28,9 @@ Phases
 ------
 1. [DONE] BASE - C++ core structure + Python wrapper stub
 2. [DONE] CRYPTO - AES-256-GCM, RSA-2048, hybrid encryption, PBKDF2, file targeting, anti-recovery
-3. [TODO] INTEGRATION - pybrid11 bridge for direct C++ <-> Python calls
-4. [TODO] EVASION - Process hollowing, AMSI bypass, code signing, defense evasion
-5. [TODO] DEPLOYMENT - Windows .exe build via MinGW/MSVC
+3. [DONE] INTEGRATION - Python ctypes bridge, full workflow integration, ransom note generation
+4. [DONE] EVASION - Process hollowing, AMSI bypass, anti-debug/anti-VM detection, shadow copy deletion
+5. [TODO] DEPLOYMENT - Windows .exe build via MinGW/MSVC (requires Windows environment)
 
 Technology Stack
 ---------------
