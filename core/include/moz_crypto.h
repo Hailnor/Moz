@@ -8,6 +8,7 @@
 #include <vector>
 #include <cstdint>
 #include <memory>
+#include <cstring>
 
 namespace moz {
 
@@ -17,6 +18,74 @@ struct EncryptedBlob {
     std::vector<uint8_t> iv;       // 12-byte nonce for GCM
     std::vector<uint8_t> tag;      // 16-byte auth tag
     std::vector<uint8_t> aes_key;  // Encrypted AES key (RSA wrapped)
+    
+    // Serialize to binary format for file storage / ctypes interop
+    std::vector<uint8_t> serialize() const {
+        std::vector<uint8_t> data;
+        const char header[] = "MOZ_HYBRID_V1";
+        data.insert(data.end(), header, header + 13);
+        
+        // AES key
+        uint32_t aes_key_len = static_cast<uint32_t>(aes_key.size());
+        data.insert(data.end(), reinterpret_cast<uint8_t*>(&aes_key_len),
+                                 reinterpret_cast<uint8_t*>(&aes_key_len) + sizeof(uint32_t));
+        data.insert(data.end(), aes_key.begin(), aes_key.end());
+        
+        // IV
+        uint32_t iv_len = static_cast<uint32_t>(iv.size());
+        data.insert(data.end(), reinterpret_cast<uint8_t*>(&iv_len),
+                                 reinterpret_cast<uint8_t*>(&iv_len) + sizeof(uint32_t));
+        data.insert(data.end(), iv.begin(), iv.end());
+        
+        // Auth tag
+        data.insert(data.end(), tag.begin(), tag.end());
+        
+        // Ciphertext
+        uint64_t ct_len = static_cast<uint64_t>(ciphertext.size());
+        data.insert(data.end(), reinterpret_cast<uint8_t*>(&ct_len),
+                                 reinterpret_cast<uint8_t*>(&ct_len) + sizeof(uint64_t));
+        data.insert(data.end(), ciphertext.begin(), ciphertext.end());
+        
+        return data;
+    }
+    
+    // Deserialize from binary format
+    static EncryptedBlob deserialize(const std::vector<uint8_t>& data) {
+        EncryptedBlob blob;
+        size_t offset = 0;
+        
+        // Verify header
+        if (data.size() < 13 + 4) return blob;
+        if (memcmp(data.data(), "MOZ_HYBRID_V1", 13) != 0) return blob;
+        offset += 13;
+        
+        // AES key
+        uint32_t aes_key_len = *reinterpret_cast<const uint32_t*>(data.data() + offset);
+        offset += 4;
+        if (offset + aes_key_len > data.size()) return blob;
+        blob.aes_key.assign(data.begin() + offset, data.begin() + offset + aes_key_len);
+        offset += aes_key_len;
+        
+        // IV
+        uint32_t iv_len = *reinterpret_cast<const uint32_t*>(data.data() + offset);
+        offset += 4;
+        if (offset + iv_len > data.size()) return blob;
+        blob.iv.assign(data.begin() + offset, data.begin() + offset + iv_len);
+        offset += iv_len;
+        
+        // Auth tag (16 bytes)
+        if (offset + 16 > data.size()) return blob;
+        blob.tag.assign(data.begin() + offset, data.begin() + offset + 16);
+        offset += 16;
+        
+        // Ciphertext
+        uint64_t ct_len = *reinterpret_cast<const uint64_t*>(data.data() + offset);
+        offset += 8;
+        if (offset + ct_len > data.size()) return blob;
+        blob.ciphertext.assign(data.begin() + offset, data.begin() + offset + ct_len);
+        
+        return blob;
+    }
 };
 
 // RSA key pair container
