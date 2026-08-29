@@ -28,9 +28,12 @@ Phases
 ------
 1. [DONE] BASE - C++ core structure + Python wrapper stub
 2. [DONE] CRYPTO - AES-256-GCM, RSA-2048, hybrid encryption, PBKDF2, file targeting, anti-recovery
+3. [TODO] INTEGRATION - pybrid11 bridge for direct C++ <-> Python calls
+4. [TODO] EVASION - Process hollowing, AMSI bypass, code signing, defense evasion
+5. [TODO] DEPLOYMENT - Windows .exe build via MinGW/MSVC
 
 Technology Stack
-----------------
+---------------
 - C++ Core: OpenSSL 3.0 (AES-256-GCM, RSA-2048, PBKDF2, SHA-256)
 - Python Wrapper: cryptography library (fallback AES-GCM), ctypes for C++ binding
 - Build: CMake + GCC 13.3
